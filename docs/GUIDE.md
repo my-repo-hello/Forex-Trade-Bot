@@ -27,7 +27,7 @@ lot size, close trades, and hit an **🚨 EMERGENCY STOP**.
 
 ### 1.3 Download the code
 ```bash
-git clone git@github.com:sanjai-repo/Forex-Trade-Bot.git
+git clone git@github.com:my-repo-hello/Forex-Trade-Bot.git
 cd Forex-Trade-Bot
 cp .env.example .env
 ```
