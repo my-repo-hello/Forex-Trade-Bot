@@ -83,12 +83,13 @@ python3 -m venv .venv
 # 4. Start everything as auto-start services (MT5 -> bridge -> bot)
 ./deploy/install_services.sh
 ```
-How it works: `bridge/start_bridge.sh` runs a small server inside Wine (127.0.0.1:18812 only)
+How it works: the `mt5-stack` service (`bridge/mt5_stack.sh`) waits for your desktop, **opens MT5
+automatically**, then runs a small bridge server inside Wine (127.0.0.1:18812 only)
 that gives the Linux bot access to the official `MetaTrader5` package.
 
 Useful commands:
 ```bash
-systemctl --user status forex-bot        # is it running?
+systemctl --user status mt5-stack forex-bot   # is it running?
 journalctl --user -u forex-bot -f        # live log
 systemctl --user restart forex-bot       # after editing .env
 systemctl --user stop forex-bot          # stop the bot (MT5 keeps SL/TP)
@@ -197,7 +198,8 @@ Stopped/paused state and lot setting are remembered after restarts.
 | Symptom | Fix |
 |---|---|
 | Bot doesn't answer | Is it running? `systemctl --user status forex-bot`. Is your id in `ALLOWED_CHAT_IDS`? |
-| `MT5 bridge not reachable` | `systemctl --user restart mt5-bridge` (Linux); MT5 must be open |
+| `MT5 bridge not reachable` | `systemctl --user restart mt5-stack` (reopens MT5 + bridge) |
+| MT5 doesn't open after boot | It opens after you log in to the desktop; check `journalctl --user -u mt5-stack` |
 | `Algo Trading is DISABLED` | Press the Algo Trading button in MT5 |
 | `Unsupported filling mode` / `Invalid stops` | Broker rule — report the message; SL may be too close |
 | `symbol ... not available` | Check the symbol name in MT5 Market Watch; set `SYMBOL_SUFFIX` |

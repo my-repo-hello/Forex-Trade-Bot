@@ -20,14 +20,21 @@ def load():
     if sys.platform == "win32":
         import MetaTrader5 as mt5
         return mt5
-    # Linux: official MetaTrader5 package running in Wine, reached via bridge/start_bridge.sh
+    # Linux: official MetaTrader5 package running in Wine, reached via the bridge (bridge/mt5_stack.sh)
     import rpyc
     host = _strip(os.environ.get("MT5LINUX_HOST")) or "127.0.0.1"
     port = int(_strip(os.environ.get("MT5LINUX_PORT")) or 18812)
-    try:
-        conn = rpyc.classic.connect(host, port)
-    except OSError as e:
-        raise RuntimeError(f"MT5 bridge not reachable on {host}:{port} — run bridge/start_bridge.sh first") from e
+    import time
+    for attempt in range(36):  # after boot MT5 + bridge can take a while: wait up to 3 min
+        try:
+            conn = rpyc.classic.connect(host, port)
+            break
+        except OSError as e:
+            if attempt == 35:
+                raise RuntimeError(f"MT5 bridge not reachable on {host}:{port} — "
+                                   "check: systemctl --user status mt5-stack") from e
+            print(f"waiting for MT5 bridge on {host}:{port} ...", flush=True)
+            time.sleep(5)
     conn._config["sync_request_timeout"] = 60
     return _Bridge(conn)
 
