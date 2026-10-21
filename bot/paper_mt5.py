@@ -42,6 +42,13 @@ class PaperMT5:
         self.deals = []
 
     # ---- connection ----
+    is_paper = True
+    connected = True
+
+    def reset(self): pass
+    def is_open(self): return True
+    def close_terminal(self): pass
+
     def initialize(self, **_): return True
     def shutdown(self): pass
     def last_error(self): return (0, "paper")

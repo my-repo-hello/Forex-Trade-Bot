@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Install auto-start (systemd --user) services:
-#   mt5-stack  : opens MT5 (Wine) + runs the bridge, health-checked as one unit
-#   forex-bot  : the Telegram bot
-# Both start automatically after login/boot and restart on crash.
+# Install systemd --user services:
+#   forex-bot  : the Telegram bot — starts at boot/login, restarts on crash
+#   mt5-stack  : MT5 (Wine) + bridge, health-checked as one unit. NOT started at boot:
+#                the bot starts it only when needed (signal, button, open trades)
+#                and stops it again after MT5_IDLE_CLOSE_MIN minutes with no trades.
 #   ./deploy/install_services.sh          install + start
 #   systemctl --user status mt5-stack forex-bot
 #   journalctl --user -u forex-bot -f     live logs
@@ -25,22 +26,20 @@ Description=MetaTrader 5 (Wine) + Linux bridge, supervised together
 [Service]
 Environment=WINEPREFIX=$PREFIX DISPLAY=${DISPLAY:-:0} XAUTHORITY=$HOME/.Xauthority
 ExecStart=$BOT_DIR/bridge/mt5_stack.sh
-# stop every Wine process cleanly so the next start is fresh
+# Wine ignores SIGTERM: shut the whole Wine session down directly (fast, no leftovers)
+ExecStop=/usr/bin/env WINEPREFIX=$PREFIX wineserver -k
 ExecStopPost=/usr/bin/env WINEPREFIX=$PREFIX wineserver -k
 KillMode=control-group
-TimeoutStopSec=30
-Restart=always
+SuccessExitStatus=1 143 SIGTERM SIGKILL
+TimeoutStopSec=20
+Restart=on-failure
 RestartSec=10
-
-[Install]
-WantedBy=default.target
 UNIT
 
 cat > "$UNIT_DIR/forex-bot.service" <<UNIT
 [Unit]
 Description=Telegram -> MT5 signal bot
-After=mt5-stack.service network-online.target
-Wants=mt5-stack.service
+After=network-online.target
 
 [Service]
 WorkingDirectory=$BOT_DIR
@@ -53,6 +52,7 @@ WantedBy=default.target
 UNIT
 
 systemctl --user daemon-reload
-systemctl --user enable mt5-stack forex-bot
-systemctl --user restart mt5-stack forex-bot
-echo "Installed. Status: systemctl --user status mt5-stack forex-bot"
+systemctl --user disable mt5-stack 2>/dev/null || true   # on-demand only
+systemctl --user enable forex-bot
+systemctl --user restart forex-bot
+echo "Installed. MT5 opens when a signal arrives. Status: systemctl --user status forex-bot mt5-stack"

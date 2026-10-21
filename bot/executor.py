@@ -37,6 +37,8 @@ class Executor:
         self._halted = False         # set by STOP / emergency button; persisted
         self.day = {"date": "", "balance": 0.0}
         self.recent = {}             # signal fingerprint -> time, blocks duplicates
+        self.idle_close_min = cfg("MT5_IDLE_CLOSE_MIN", 10, int)  # 0 = keep MT5 open
+        self.last_used = time.time()
         self.lock = threading.Lock()
         self.state_file = cfg("STATE_FILE", "state.json")
         self.groups = self._load_groups()
@@ -143,7 +145,12 @@ class Executor:
         return (f"{kind} account {a.login} ({a.server})\nBalance {a.balance:,.2f} {a.currency}"
                 + ("" if algo else "\n❌ Algo Trading is DISABLED in MT5 — enable the 'Algo Trading' button!"))
 
+    def touch(self):
+        """Something needed MT5 just now; restarts the idle-close countdown."""
+        self.last_used = time.time()
+
     def ensure(self):
+        self.touch()
         if mt5.terminal_info() is None:
             self.connect()
 
@@ -318,6 +325,19 @@ class Executor:
         TP1 closed -> remaining legs SL to break-even. TP2 closed -> last leg SL to TP1.
         Pending orders older than PENDING_EXPIRY_MIN are cancelled."""
         # runs even when paused: open trades still get break-even / profit lock
+        if not self.groups:
+            # nothing to manage: never open MT5 just for this; close it when idle
+            if (not mt5.is_paper and self.idle_close_min and mt5.is_open()
+                    and time.time() - self.last_used > self.idle_close_min * 60):
+                with self.lock:
+                    # look without ensure(): must never reopen an MT5 the user just closed
+                    if mt5.terminal_info() is not None and [
+                            x for x in (mt5.positions_get() or ()) + (mt5.orders_get() or ())
+                            if x.magic == self.magic]:
+                        return []  # bot trades exist without state: keep MT5 open
+                    mt5.close_terminal()
+                return ["💤 MT5 closed — no open trades.\nIt opens automatically when you send a signal."]
+            return []
         self.ensure()
         msgs = []
         pos = [p for p in (mt5.positions_get() or []) if p.magic == self.magic]

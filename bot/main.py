@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import re
+import sys
 import time
 
 from dotenv import load_dotenv
@@ -25,6 +26,7 @@ for noisy in ("httpx", "apscheduler"):  # httpx logs URLs containing the bot tok
 ALLOWED = {int(x) for x in os.environ["ALLOWED_CHAT_IDS"].split("#")[0].replace(" ", "").split(",") if x}
 ex = Executor()
 _last_sid = 0
+_reconnected = False
 
 # always-visible keyboard under the chat box; "🚨 EMERGENCY STOP" text is itself a stop word
 PANIC = ReplyKeyboardMarkup([[KeyboardButton("🚨 EMERGENCY STOP")],
@@ -94,7 +96,15 @@ LOST = (EOFError, ConnectionError, BrokenPipeError, TimeoutError)
 
 
 async def run(fn, *a):
-    return await asyncio.to_thread(fn, *a)  # MT5 calls are blocking
+    """Run a blocking MT5 call. If MT5 was closed meanwhile, reconnect (reopens it) once."""
+    try:
+        return await asyncio.to_thread(fn, *a)
+    except LOST as e:
+        global _reconnected
+        log.warning("MT5 connection lost (%r) — reconnecting", e)
+        mt5.reset()
+        _reconnected = True
+        return await asyncio.to_thread(fn, *a)
 
 
 async def notify(bot, text, **kw):
@@ -106,11 +116,16 @@ async def notify(bot, text, **kw):
 
 
 async def connection_lost(bot, e):
-    """MT5/bridge died: tell the user, then exit so systemd restarts everything cleanly."""
-    log.error("MT5 connection lost: %r — exiting for restart", e)
-    await notify(bot, "⚠️ Lost connection to MT5 — bot restarting in a few seconds.\n"
-                      "If this repeats, check MT5 / the bridge. Open trades keep their SL/TP in MT5.")
-    os._exit(3)
+    """MT5 could not be reached even after reopening it."""
+    log.error("MT5 unreachable: %r", e)
+    mt5.reset()
+    await notify(bot, "⚠️ Could not reach MT5 — will retry automatically.\n"
+                      "Open trades keep their SL/TP inside MT5. Check: systemctl --user status mt5-stack")
+
+
+async def opening_notice(message):
+    if not mt5.connected:
+        await message.reply_text("⏳ Opening MT5… (takes ~20-30 s)")
 
 
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -122,6 +137,8 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     low = text.lower()
     short = len(text) < 20
+    if short and any(w in low for w in ("balance", "status", "position")):
+        await opening_notice(update.message)
     if short and ("balance" in low or "status" in low):
         await update.message.reply_text(await run(ex.balance), reply_markup=KEYBOARD); return
     if short and "position" in low:
@@ -142,7 +159,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ex.halted = False
         await update.message.reply_text("▶️ Resumed — accepting signals."); return
     m = re.match(r"price\s+(\w+)\s+([\d.]+)$", text, re.I)
-    if m and hasattr(mt5, "set_price"):  # paper mode only: move the simulated market
+    if m and mt5.is_paper:  # paper mode only: move the simulated market
         mt5.set_price(m.group(1).upper(), float(m.group(2)))
         await update.message.reply_text(await run(ex.status)); return
     if not is_signal(text):
@@ -160,13 +177,14 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         f"🔎 Parsed: {sig.side} {sig.symbol} entry {sig.entry_low}-{sig.entry_high} SL {sig.sl} TPs {sig.tps}\nAnalysing…")
+    await opening_notice(update.message)
     global _last_sid
     _last_sid = max(_last_sid + 1, int(time.time()) % 10_000_000)  # unique even within one second
     sid = f"S{_last_sid}"
     try:
         msg = await run(ex.place, sig, sid)
     except LOST as e:
-        await update.message.reply_text("❌ MT5 connection lost — signal NOT placed. Restarting…")
+        msg = "❌ MT5 not reachable — signal NOT placed. Please resend in a minute."
         await connection_lost(ctx.bot, e)
     except Exception as e:
         log.exception("place failed")
@@ -181,6 +199,8 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.answer("Not allowed"); return
     await q.answer()
     d, kb = q.data, KEYBOARD
+    if d in ("KILL", "BAL", "STATUS", "POS") or d.startswith(("CP:", "CG:")):
+        await opening_notice(q.message)
     try:
         if d == "KILL":
             msg, kb = await run(ex.emergency_stop), HALTED_KB
@@ -201,8 +221,8 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             return
     except LOST as e:
-        await q.message.reply_text("❌ MT5 connection lost — restarting. Check MT5 manually!")
         await connection_lost(ctx.bot, e)
+        msg = "❌ MT5 not reachable — try again in a minute." + (" CHECK MT5 MANUALLY!" if d == "KILL" else "")
     except Exception as e:
         log.exception("button %s", d)
         msg = f"❌ Error: {e}" + (" — CLOSE MANUALLY IN MT5!" if d == "KILL" else "")
@@ -238,26 +258,34 @@ async def cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def manage_job(ctx: ContextTypes.DEFAULT_TYPE):
+    global _reconnected
+    had_trades, _reconnected = bool(ex.groups), False
     try:
         msgs = await run(ex.manage)
     except LOST as e:
         await connection_lost(ctx.bot, e); return
     except Exception:
         log.exception("manage loop"); return
+    if had_trades and _reconnected:
+        msgs.insert(0, "ℹ️ MT5 was closed while trades are open — reopened it to manage them.")
     for m in msgs:
         log.info("manage: %s", m)
         await notify(ctx.bot, m)
 
 
 async def on_startup(app):
-    label = await run(ex.account_label)
     state = "⛔ STOPPED (tap ▶️ Resume to trade)" if ex.halted else "🟢 RUNNING — accepting signals"
+    if ex.groups or mt5.is_paper:
+        label = await run(ex.account_label)  # open trades to manage -> MT5 needed now
+    else:
+        if sys.platform != "win32":
+            await run(mt5.close_terminal)  # leftover MT5 from before a restart
+        label = "MT5 stays closed until a signal arrives (opens automatically)."
     await notify(app.bot, f"🤖 Bot started\n{label}\nLot mode: {ex.lot_mode()}\n{state}",
                  reply_markup=PANIC)
 
 
 def main():
-    ex.connect()
     app = Application.builder().token(os.environ["TELEGRAM_BOT_TOKEN"]).post_init(on_startup).build()
     app.add_handler(CommandHandler(["start", "help", "stop", "kill", "resume", "pause", "status", "balance", "positions", "lot"], cmd))
     app.add_handler(CallbackQueryHandler(on_button))

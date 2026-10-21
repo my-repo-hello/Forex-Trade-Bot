@@ -48,6 +48,7 @@ cp .env.example .env
 | `PENDING_EXPIRY_MIN` | Cancel unfilled limit orders after N minutes |
 | `DAILY_LOSS_LIMIT_PCT` | Stop new trades after this % loss today |
 | `DUPLICATE_WINDOW_MIN` | Ignore the same signal repeated within N minutes |
+| `MT5_IDLE_CLOSE_MIN` | Close MT5 N minutes after the last trade closes (0 = never) |
 | `SYMBOL_SUFFIX` | Usually leave empty — the bot auto-detects `XAUUSD+`, `XAUUSD.r` … |
 
 Never commit or share `.env`.
@@ -83,8 +84,11 @@ python3 -m venv .venv
 # 4. Start everything as auto-start services (MT5 -> bridge -> bot)
 ./deploy/install_services.sh
 ```
-How it works: the `mt5-stack` service (`bridge/mt5_stack.sh`) waits for your desktop, **opens MT5
-automatically**, then runs a small bridge server inside Wine (127.0.0.1:18812 only)
+How it works: MT5 is opened **only when needed**. When a signal arrives (or you tap 💰 Balance /
+📋 Positions / 🚨), the bot starts the `mt5-stack` service (`bridge/mt5_stack.sh`): it opens MT5 and runs
+a small bridge server inside Wine (127.0.0.1:18812 only). MT5 stays open while bot trades are open
+(needed for break-even / alerts) and closes **`MT5_IDLE_CLOSE_MIN` minutes** (default 10) after the
+last trade closes. If you close MT5 yourself with no trades open, it stays closed.
 that gives the Linux bot access to the official `MetaTrader5` package.
 
 Useful commands:
@@ -199,7 +203,8 @@ Stopped/paused state and lot setting are remembered after restarts.
 |---|---|
 | Bot doesn't answer | Is it running? `systemctl --user status forex-bot`. Is your id in `ALLOWED_CHAT_IDS`? |
 | `MT5 bridge not reachable` | `systemctl --user restart mt5-stack` (reopens MT5 + bridge) |
-| MT5 doesn't open after boot | It opens after you log in to the desktop; check `journalctl --user -u mt5-stack` |
+| MT5 not open | Normal — it opens when a signal arrives (takes ~20-30 s). Check `journalctl --user -u mt5-stack` |
+| Keep MT5 always open | Set `MT5_IDLE_CLOSE_MIN=0` in `.env` and restart the bot |
 | `Algo Trading is DISABLED` | Press the Algo Trading button in MT5 |
 | `Unsupported filling mode` / `Invalid stops` | Broker rule — report the message; SL may be too close |
 | `symbol ... not available` | Check the symbol name in MT5 Market Watch; set `SYMBOL_SUFFIX` |

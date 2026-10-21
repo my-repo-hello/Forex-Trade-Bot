@@ -61,8 +61,9 @@ Also skipped: no SL, SL/TP on the wrong side, spread > `MAX_SPREAD_POINTS`, `MAX
 Only Telegram user ids in `ALLOWED_CHAT_IDS` are obeyed. Only trades with the bot's `MAGIC` number are touched.
 
 ## Run 24/7 (Linux auto-start)
-`./deploy/install_services.sh` installs 2 systemd user services — `mt5-stack` (opens MT5 + bridge,
-health-checked together) and `forex-bot` — that start after login and restart automatically on crash. If MT5 or the bridge drops,
+`./deploy/install_services.sh` installs `forex-bot` (starts at login, restarts on crash) and
+`mt5-stack` (MT5 + bridge). MT5 opens **only when a signal arrives** and closes again
+`MT5_IDLE_CLOSE_MIN` minutes after the last trade closes. If MT5 or the bridge drops,
 the bot warns you in Telegram and restarts itself (~40 s). Open trades keep their SL/TP inside MT5.
 ```
 systemctl --user status forex-bot          # state

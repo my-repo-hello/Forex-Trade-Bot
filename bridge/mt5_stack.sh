@@ -4,7 +4,10 @@
 #  1. wait until the desktop (X display) is usable
 #  2. open MT5 if it is not already running
 #  3. run the bridge
-#  4. every 15 s check MT5 + bridge port; on failure exit -> systemd restarts the whole stack
+#  4. every 15 s check MT5 + bridge port:
+#     - MT5 closed (by you or by the bot when idle) -> stop cleanly, do NOT reopen
+#       (the bot reopens it on demand: signal, button, or open trades to manage)
+#     - bridge died while MT5 runs -> exit 1 -> systemd restarts the stack
 set -u
 export WINEPREFIX="${WINEPREFIX:-$HOME/.mt5}" WINEDEBUG=-all
 export DISPLAY="${DISPLAY:-:0}" XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
@@ -38,11 +41,14 @@ log "bridge listening on 127.0.0.1:$PORT — stack healthy"
 fails=0
 while true; do
     sleep 15
-    if mt5_up && port_up; then
+    if ! mt5_up; then
+        log "MT5 was closed — stopping (bot reopens it when needed)"; exit 0
+    fi
+    if port_up; then
         fails=0
     else
         fails=$((fails + 1))
-        log "health check failed ($fails/3): mt5=$(mt5_up && echo up || echo DOWN) bridge=$(port_up && echo up || echo DOWN)"
+        log "bridge health check failed ($fails/3)"
         [ "$fails" -ge 3 ] && { log "restarting stack"; exit 1; }
     fi
 done
